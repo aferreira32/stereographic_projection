@@ -12,13 +12,20 @@ Workflow:
 
 Convention (matches Stereoproj / DoITPoMS / orix):
     - Directions live in a right-handed (x, y, z) frame.
-    - Projection is from the south pole (0, 0, -1) onto the z = 0 plane.
-    - Only the upper hemisphere (z >= 0) is kept; a direction with z < 0
-      is replaced by its antipode -[uvw]/-(hkl) so it can still be shown
-      (this mirrors what Stereoproj does, and is flagged in the label).
-    - A unit direction (x, y, z) with z >= 0 projects to:
-          X = x / (1 + z)
-          Y = y / (1 + z)
+    - Upper-hemisphere poles (z >= 0) are projected from the south pole
+      (0, 0, -1) onto the z = 0 plane and drawn as filled markers:
+          X0 = x / (1 + z)
+          Y0 = y / (1 + z)
+    - Lower-hemisphere poles (z < 0) are projected from the north pole
+      (0, 0, +1) instead, using their own coordinates (no antipode flip),
+      and drawn as open (unfilled) markers, smaller in size than the
+      filled ones so a coincident pair (h,k,l)/(h,k,-l) shows the open
+      ring enclosing the filled dot:
+          X0 = x / (1 - z)
+          Y0 = y / (1 - z)
+    - Both are then rotated 90 degrees in-plane, (X, Y) = (Y0, -X0), so
+      that [100] plots at the south (bottom) of the diagram and [-100]
+      at the north (top).
 
 Current limitation: Miller indices [uvw] and (hkl) are treated as direct
 Cartesian components. This is EXACT for cubic crystals, and a reasonable
@@ -30,6 +37,7 @@ can be added later once crystal parameters + symmetry are wanted.
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
+from adjustText import adjust_text
 
 
 class StereoProjector:
@@ -51,39 +59,56 @@ class StereoProjector:
         return v / n
 
     @staticmethod
-    def _project(vec):
-        """Project a single upper-hemisphere unit vector to (X, Y)."""
+    def _project(vec, hemisphere='upper'):
+        """
+        Project a unit vector to (X, Y).
+
+        `hemisphere='upper'` projects from the south pole (for z >= 0
+        directions); `hemisphere='lower'` projects from the north pole
+        (for z < 0 directions, using their own coordinates rather than
+        an antipode). The result is rotated 90 degrees in-plane so that
+        [100] lands at the south of the diagram and [-100] at the north.
+        """
         x, y, z = vec
-        return x / (1.0 + z), y / (1.0 + z)
+        if hemisphere == 'upper':
+            X0, Y0 = x / (1.0 + z), y / (1.0 + z)
+        else:
+            X0, Y0 = x / (1.0 - z), y / (1.0 - z)
+        return Y0, -X0
 
     @staticmethod
     def _fmt(n):
         """Format an index with an overbar for negative values, e.g. -1 -> '1̄'."""
         n = int(round(n))
-        return f"{abs(n)}\u0305" if n < 0 else f"{n}"
+        return f"\\bar{{{abs(n)}}}" if n < 0 else f"{n}"
 
     def _index_label(self, brackets, h, k, l):
         left, right = brackets
-        return left + "".join(self._fmt(n) for n in (h, k, l)) + right
+        body = "".join(self._fmt(n) for n in (h, k, l))
+        return f"{left}${body}${right}"
 
     # ------------------------------------------------------------------ #
     # public API
     # ------------------------------------------------------------------ #
     def add_pole(self, h, k, l, label=None, marker='o', color='black',
-                 fill=True, size=60):
-        """Add a pole (hkl) / direction [uvw] from Miller indices."""
+                 size=45, open_size=100):
+        """
+        Add a pole (hkl) / direction [uvw] from Miller indices.
+
+        Upper-hemisphere poles (z >= 0) are drawn as filled markers at
+        `size`. Lower-hemisphere poles (z < 0) are drawn as open markers
+        at `open_size` (larger by default) so that a pole coincident
+        with its through-the-plane counterpart -- (h,k,l) and (h,k,-l) --
+        shows as an open ring enclosing the filled dot rather than one
+        marker hiding the other.
+        """
         v = self._normalize([h, k, l])
-        flipped = False
-        if v[2] < -1e-9:
-            v = -v
-            h, k, l = -h, -k, -l
-            flipped = True
+        southern = v[2] < -1e-9
         if label is None:
             label = self._index_label("()", h, k, l)
-            if flipped:
-                label += "*"   # marks that the antipode was plotted instead
         self.poles.append(dict(vec=v, label=label, marker=marker,
-                                color=color, fill=fill, size=size))
+                                color=color, southern=southern,
+                                size=(open_size if southern else size)))
         return self
 
     def add_zone(self, u, v, w, label=None, color='tab:red',
@@ -149,7 +174,7 @@ class StereoProjector:
     # ------------------------------------------------------------------ #
     # plotting
     # ------------------------------------------------------------------ #
-    def plot(self, ax=None, show_labels=True, show_boundary=True):
+    def plot(self, ax=None, show_labels=True, show_boundary=True, adjust_labels=True):
         created_fig = ax is None
         if created_fig:
             fig, ax = plt.subplots(figsize=(self.figsize, self.figsize))
@@ -160,7 +185,9 @@ class StereoProjector:
         if show_boundary:
             ax.add_patch(Circle((0, 0), 1.0, fill=False, color='black',
                                  linewidth=1.3))
-            ax.plot(0, 0, '+', color='black', markersize=8, markeredgewidth=1.2)
+            ax.plot(0, 0, '+', color='black', markersize=4, markeredgewidth=1.2)
+
+        texts, anchor_x, anchor_y = [], [], []
 
         for z in self.zones:
             arcs = self._great_circle_arcs(z['axis'], z['n_samples'])
@@ -169,20 +196,32 @@ class StereoProjector:
                         linestyle=z['linestyle'], linewidth=z['linewidth'])
             if show_labels and arcs:
                 mid = arcs[0][len(arcs[0]) // 2]
-                ax.annotate(z['label'], mid, color=z['color'], fontsize=9,
-                            xytext=(3, 3), textcoords='offset points')
+                texts.append(ax.text(mid[0], mid[1], z['label'],
+                                      color=z['color'], fontsize=9))
+                anchor_x.append(mid[0])
+                anchor_y.append(mid[1])
 
         for p in self.poles:
-            X, Y = self._project(p['vec'])
-            fc = p['color'] if p['fill'] else 'none'
+            hemisphere = 'lower' if p['southern'] else 'upper'
+            X, Y = self._project(p['vec'], hemisphere)
+            fc = 'none' if p['southern'] else p['color']
+            zorder = 5 if p['southern'] else 6   # filled dot drawn on top of any open ring
             ax.scatter([X], [Y], s=p['size'], marker=p['marker'],
-                       facecolor=fc, edgecolor=p['color'], zorder=5)
+                       facecolor=fc, edgecolor=p['color'], zorder=zorder)
             if show_labels:
-                ax.annotate(p['label'], (X, Y), fontsize=9,
-                            xytext=(5, 5), textcoords='offset points')
+                texts.append(ax.text(X, Y, p['label'], fontsize=9))
+                anchor_x.append(X)
+                anchor_y.append(Y)
 
         ax.set_xlim(-1.15, 1.15)
         ax.set_ylim(-1.15, 1.15)
+
+        if show_labels and adjust_labels and texts:
+            # Push overlapping labels apart; draw a thin leader line back to
+            # the point/mid-arc a label was moved away from.
+            adjust_text(texts, x=anchor_x, y=anchor_y, ax=ax,
+                        arrowprops=dict(arrowstyle='-', color='gray',
+                                         lw=0.6, shrinkA=0, shrinkB=3))
 
         if created_fig:
             plt.tight_layout()
@@ -194,15 +233,20 @@ if __name__ == "__main__":
     sp = StereoProjector()
     sp.add_pole(1, 0, 0)
     sp.add_pole(0, 1, 0)
-    #sp.add_pole(0, 0, 1)
+    sp.add_pole(0, 0, 1)
     sp.add_pole(-1, 0, 0)
     sp.add_pole(0, -1, 0)
     sp.add_pole(0, 0, -1)
-    #sp.add_pole(1, 1, 1)
-    #sp.add_pole(1, 1, 0)
-    #sp.add_zone(0, 0, 1)     # equator (boundary circle)
-    #sp.add_zone(1, 0, 0)     # vertical great circle through the center
-    #sp.add_zone(1, 1, 0)     # tilted great circle
+
+    sp.add_zone(1, 0, 0)
+    sp.add_zone(0, 1, 0)
+    sp.add_zone(1, 0, 1)
+    sp.add_zone(-1, 0, 1)
+    sp.add_zone(0, 1, 1)
+    sp.add_zone(0, -1, 1)
+    sp.add_zone(1, 1, 0)
+    sp.add_zone(-1, 1, 0)
+
     sp.plot()
     plt.show()
     #plt.savefig("stereoproj_demo.png", dpi=150)
