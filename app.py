@@ -24,7 +24,7 @@ if "history" not in st.session_state:
     # so "undo" can remove whichever came last regardless of its kind.
     st.session_state.history = []
 
-st.title("Stereographic Projection (Wulff Net)")
+st.title("Stereographic Projection")
 st.caption(
     "Build up a stereographic projection by adding poles and zones. "
     "Every plot starts from the empty projection circle."
